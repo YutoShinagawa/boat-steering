@@ -104,7 +104,6 @@ class RotaryEncoder:
     GPIO.remove_event_detect(self.gpioA)
     GPIO.remove_event_detect(self.gpioB)
     GPIO.cleanup()
-    sys.exit(0)
     
   def _buttonCallback(self, channel):
     self.buttonCallback(GPIO.input(channel))
