@@ -11,6 +11,7 @@ I picked up [this one](https://www.adafruit.com/products/377) from Adafruit, but
 So we've got 5 wires to hook up: three for the knob part (A, B, and ground), and two for the button part (common and ground). Here's how I hooked them up ([reference](https://ms-iot.github.io/content/images/PinMappings/RP2_Pinout.png)):
 
 | Description   | BCM #                       | Board # |
+|---------------|-----------------------------|---------|
 | knob A        | GPIO 26                     | 37      |
 | knob B        | GPIO 19                     | 35      |
 | knob ground   | ground pin below GPIO 26    | 39      |
