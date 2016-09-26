@@ -1,10 +1,10 @@
 # Using a rotary encoder as a volume control
 
-On my RetroPie machine I wanted a hardware volume knob — the games I play use a handful of emulators, and there's no unified software interface for controlling the volume. So with a bunch of googling and trial and error, I figured out what I need to pull this off: a rotary encoder and a daemon that listens for the signals it sends.
+On my RetroPie machine I wanted a hardware volume knob — the games I play use a handful of emulators, and there's no unified software interface for controlling the volume. The speakers I got for my cabinet are great, but don't have their own hardware volume knob. So with a bunch of googling and trial and error, I figured out what I need to pull this off: a rotary encoder and a daemon that listens for the signals it sends.
 
 ## Rotary encoder
 
-A rotary encoder is like the standard potentiometer (i.e., analog volume knob) we all know, except (a) you can keep turning it in either direction for as long as you want, and thus (b) they talk to the RPi differently.
+A rotary encoder is like the standard potentiometer (i.e., analog volume knob) we all know, except (a) you can keep turning it in either direction for as long as you want, and thus (b) it talks to the RPi differently than a potentiometer would.
 
 I picked up [this one](https://www.adafruit.com/products/377) from Adafruit, but there are plenty others available. This rotary encoder also lets you push the knob in and treats that like a button press, so I figured that would be useful for toggling mute on and off.
 
@@ -69,3 +69,19 @@ sudo systemctl start monitor-volume
 ```
 
 If that worked right, then you just told Raspbian to start up that script in the background on every boot (`enable`), and also to start it right now (`start`). At this point, and on every boot after this, your volume knob should Just Work.
+
+##  FAQ
+
+**This didn't work!**
+
+I got this working on an RPi3 running RetroPie 3.x, so all I can say is “works on my machine.” Some things to try:
+
+* You might not have Python 3; if `which python3` turns up nothing, try this:
+
+  ```
+  sudo apt-get install python3 python3-rpi.gpio
+  ```
+* I've heard that in earlier versions of Raspbian, the `pi` user isn't automatically allowed to access the GPIO pins, so you need to run scripts like this as root.  If you're running into permissions errors when you try to run the script from your shell, then that's your problem, most likely. There's no particular reason why you _shouldn't_ run this script as root, except on the general principle that you shouldn't really trust code that you didn't write. Make good choices and have backups.
+* I might have made a typo in the gist. Wouldn't be the first time.
+
+If you run into trouble, leave a comment and the internet can help you figure it out.
