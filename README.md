@@ -1,3 +1,5 @@
+# Using a rotary encoder as a volume control
+
 On my RetroPie machine I wanted a hardware volume knob — the games I play use a handful of emulators, and there's no unified software interface for controlling the volume. So with a bunch of googling and trial and error, I figured out what I need to pull this off: a rotary encoder and a daemon that listens for the signals it sends.
 
 ## Rotary encoder
