@@ -22,6 +22,7 @@ import sys
 import threading
 
 from RPi import GPIO
+from queue import Queue
 
 DEBUG = False
 
@@ -49,6 +50,24 @@ VOLUME_MAX = 96
 # volume. I don't think that non-integer values work here, but you're welcome
 # to try.
 VOLUME_INCREMENT = 1
+
+# (END SETTINGS)
+# 
+
+
+# When the knob is turned, the callback happens in a separate thread. If
+# those turn callbacks fire erratically or out of order, we'll get confused
+# about which direction the knob is being turned, so we'll use a queue to
+# enforce FIFO. The callback will push onto a queue, and all the actual
+# volume-changing will happen in the main thread.
+QUEUE = Queue()
+
+# When we put something in the queue, we'll use an event to signal to the
+# main thread that there's something in there. Then the main thread will
+# process the queue and reset the event. If the knob is turned very quickly,
+# this event loop will fall behind, but that's OK because it consumes the
+# queue completely each time through the loop, so it's guaranteed to catch up.
+EVENT = threading.Event()
 
 def debug(str):
   if not DEBUG:
@@ -112,18 +131,22 @@ class RotaryEncoder:
       self.levA = level
     else:
       self.levB = level
+      
+    # Debounce.
+    if channel == self.lastGpio:
+      return
     
     # When both inputs are at 1, we'll fire a callback. If A was the most
     # recent pin set high, it'll be forward, and if B was the most recent pin
     # set high, it'll be reverse.
-    if channel != self.lastGpio: # (debounce)
-      self.lastGpio = channel
-      if channel == self.gpioA and level == 1:
-        if self.levB == 1:
-          self.callback(1)
-      elif channel == self.gpioB and level == 1:
-        if self.levA == 1:
-          self.callback(-1)
+    self.lastGpio = channel
+    if channel == self.gpioA and level == 1:
+      if self.levB == 1:
+        self.callback(1)
+    elif channel == self.gpioB and level == 1:
+      if self.levA == 1:
+        self.callback(-1)
+    EVENT.set()
 
 
 class VolumeError(Exception):
@@ -247,27 +270,35 @@ if __name__ == "__main__":
   gpioB = GPIO_B
   gpioButton = GPIO_BUTTON
   
-  event = threading.Event()
   v = Volume()
   
   def on_press(value):
     v.toggle()
-    debug("Toggled mute to {}".format(v.is_muted))
+    print("Toggled mute to: {}".format(v.is_muted))
     event.set()
   
+  # This callback runs in the background thread. All it does is put turn
+  # events into a queue and flag the main thread to process them. The
+  # queueing ensures that we won't miss anything if the knob is turned
+  # extremely quickly.
   def on_turn(delta):
+    QUEUE.put(delta)
+    EVENT.set()
+    
+  def consume_queue():
+    while not QUEUE.empty():
+      delta = QUEUE.get()
+      handle_delta(delta)
+  
+  def handle_delta(delta):
     if v.is_muted:
       debug("Unmuting")
       v.toggle()
     if delta == 1:
-      # volume up
       vol = v.up()
     else:
-      # volume down
       vol = v.down()
     print("Set volume to: {}".format(vol))
-    # Flag the main thread.
-    event.set()
     
   def on_exit(a, b):
     print("Exiting...")
@@ -285,9 +316,16 @@ if __name__ == "__main__":
   signal.signal(signal.SIGINT, on_exit)
   
   while True:
-    # For some reason, if I set a timeout on this `wait` call, even if it's a
-    # very long timeout, this script can promptly respond to SIGINT, but if I
-    # leave off the timeout it will _never_ respond to SIGINT. Whatever. I
-    # don't need it to poll at all, but a large value is a good compromise.
-    event.wait(1200)
-    event.clear()
+    # This is the best way I could come up with to ensure that this script
+    # runs indefinitely without wasting CPU by polling. The main thread will
+    # block quietly while waiting for the event to get flagged. When the knob
+    # is turned we're able to respond immediately, but when it's not being
+    # turned we're not looping at all.
+    # 
+    # The 1200-second (20 minute) timeout is a hack; for some reason, if I
+    # don't specify a timeout, I'm unable to get the SIGINT handler above to
+    # work properly. But if there is a timeout set, even if it's a very long
+    # timeout, then Ctrl-C works as intended. No idea why.
+    EVENT.wait(1200)
+    consume_queue()
+    EVENT.clear()
