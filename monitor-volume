@@ -146,8 +146,6 @@ class RotaryEncoder:
     elif channel == self.gpioB and level == 1:
       if self.levA == 1:
         self.callback(-1)
-    EVENT.set()
-
 
 class VolumeError(Exception):
   pass
@@ -275,7 +273,7 @@ if __name__ == "__main__":
   def on_press(value):
     v.toggle()
     print("Toggled mute to: {}".format(v.is_muted))
-    event.set()
+    EVENT.set()
   
   # This callback runs in the background thread. All it does is put turn
   # events into a queue and flag the main thread to process them. The
