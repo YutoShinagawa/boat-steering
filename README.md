@@ -22,7 +22,7 @@ You can use whichever pins you want; just update the script if you change them.
 
 ## Volume daemon
 
-Since the GPIO pins are just for arbitrary signals, you need a script on the Pi that knows what to do with them, The builtin GPIO library for the Pi will do nicely for this.
+Since the GPIO pins are just for arbitrary signals, you need a script on the Pi that knows what to do with them. The builtin GPIO library for the Pi will do nicely for this.
  
 You'll see the script below, but here's how it works: it listens on the specified pins, and when the knob is turned one way or another, it uses the states of the A and B pins to figure out whether the knob was turned to the left or to the right. That way it knows whether to increase or decrease the system volume in response, which it does with the command-line program `amixer`.
 
