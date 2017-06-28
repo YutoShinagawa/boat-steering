@@ -26,6 +26,14 @@ Since the GPIO pins are just for arbitrary signals, you need a script on the Pi 
  
 You'll see the script below, but here's how it works: it listens on the specified pins, and when the knob is turned one way or another, it uses the states of the A and B pins to figure out whether the knob was turned to the left or to the right. That way it knows whether to increase or decrease the system volume in response, which it does with the command-line program `amixer`.
 
+First, make sure `amixer` is present and install it if it isn’t.
+
+```sh
+which amixer || sudo apt-get install alsa-utils
+```
+
+(If you’re not using the default analog audio output, consult @thijstriemstra’s comment below for some additional steps that you may or may not need to do.)
+
 Create a `bin` directory in your `pi` folder if it doesn't exist already, then drop the script below into it.
 
 ```
