@@ -8,7 +8,7 @@ A rotary encoder is like the standard potentiometer (i.e., analog volume knob) w
 
 I picked up [this one](https://www.adafruit.com/products/377) from Adafruit, but there are plenty others available. This rotary encoder also lets you push the knob in and treats that like a button press, so I figured that would be useful for toggling mute on and off.
 
-So we've got 5 wires to hook up: three for the knob part (A, B, and ground), and two for the button part (common and ground). Here's how I hooked them up ([reference](https://ms-iot.github.io/content/images/PinMappings/RP2_Pinout.png)):
+So we've got 5 wires to hook up: three for the knob part (A, B, and ground), and two for the button part (common and ground). Here's how I hooked them up ([reference](https://pinout.xyz)):
 
 | Description   | BCM #                       | Board # |
 |---------------|-----------------------------|---------|
