@@ -1,10 +1,12 @@
 [Unit]
-Description=Volume knob monitor
+Description=Boat Steering Service
+After=can-setup.service
+Requires=can-setup.service
 
 [Service]
-User=pi
-Group=pi
-ExecStart=/home/pi/bin/monitor-volume
+Type=simple
+ExecStart=/home/yuto/boat-steering/boat-steering.py
+WorkingDirectory=/home/yuto/boat-steering
 
 [Install]
 WantedBy=multi-user.target
