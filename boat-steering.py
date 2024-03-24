@@ -1,18 +1,17 @@
-#!/usr/bin/env python3
+#!/usr/bin python3
 
 """
-The daemon responsible for changing the volume in response to a turn or press
-of the volume knob.
-
-The volume knob is a rotary encoder. It turns infinitely in either direction.
-Turning it to the right will increase the volume; turning it to the left will
-decrease the volume. The knob can also be pressed like a button in order to
-turn muting on or off.
+The daemon responsible for moving the actuator in response to a turn or press
+of the rotary encoder.  It turns infinitely in either direction.
 
 The knob uses two GPIO pins and we need some extra logic to decode it. The
 button we can just treat like an ordinary button. Rather than poll
 constantly, we use threads and interrupts to listen on all three pins in one
 script.
+
+Yuto Shinagawa forked Andrew Dupont's speaker volume control project
+(https://gist.github.com/savetheclocktower) and modified it for controlling
+CAN bus-controlled servo actuators
 """
 
 import os
@@ -20,6 +19,9 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+import can
+import datetime
 
 from RPi import GPIO
 from queue import Queue
@@ -30,36 +32,52 @@ DEBUG = False
 # ========
 
 # The two pins that the encoder uses (BCM numbering).
-GPIO_A = 26   
-GPIO_B = 19
+GPIO_A = 23
+GPIO_B = 24
 
 # The pin that the knob's button is hooked up to. If you have no button, set
 # this to None.
-GPIO_BUTTON = 13 
+GPIO_BUTTON = None
 
-# The minimum and maximum volumes, as percentages.
-#
-# The default max is less than 100 to prevent distortion. The default min is
-# greater than zero because if your system is like mine, sound gets
-# completely inaudible _long_ before 0%. If you've got a hardware amp or
-# serious speakers or something, your results will vary.
-VOLUME_MIN = 60
-VOLUME_MAX = 96
+# The minimum and maximum steering angle in mm
+STROKE_MIN = 0 #mm
+STROKE_MAX = 150 #mm
+STROKE_RESET = 75 #mm
 
-# The amount you want one click of the knob to increase or decrease the
-# volume. I don't think that non-integer values work here, but you're welcome
-# to try.
-VOLUME_INCREMENT = 1
+# The amount you want one click of the knob to increase or decrease the command stroke
+STROKE_INCREMENT = 1 #mm
+
+# Controller will command the servo to move if the feedback position deviates from the
+# command reference by more than the threshold below
+MOTION_THRESH = 2 #mm
+
+# Send SAEJ1939 actuator control messages (ACM) at fixed rate even if the
+# actuator isn't being actively moved so that we continue to get periodic
+# actuator feedback messages (AFM).
+# Set the motion bit within the ACM to 1 only when the actuator needs to be
+# moved to a different position; keep 0 all other times
+CAN1_ID = 0x18ef1300 #18=priority 6; ef=actuator command msg; 13=destination addr; 00=source (pi) address
+CAN2_ID = 0x18ef1400
+CAN_SEND_HZ = 10
+
+# CAN MSG bit to engineering unit scaling factors
+MM_BIT = 0.1
+AMP_BIT = 0.1
+PERC_BIT = 5
+
+# CONFIGURABLE ACTUATOR SETTINGS
+CURRENT_AMPS = 20
+SPEED_PERC = 25
+
 
 # (END SETTINGS)
-# 
 
 
 # When the knob is turned, the callback happens in a separate thread. If
 # those turn callbacks fire erratically or out of order, we'll get confused
 # about which direction the knob is being turned, so we'll use a queue to
 # enforce FIFO. The callback will push onto a queue, and all the actual
-# volume-changing will happen in the main thread.
+# actuator moving will happen in the main thread.
 QUEUE = Queue()
 
 # When we put something in the queue, we'll use an event to signal to the
@@ -77,7 +95,6 @@ def debug(str):
 class RotaryEncoder:
   """
   A class to decode mechanical rotary encoder pulses.
-
   Ported to RPi.GPIO from the pigpio sample here: 
   http://abyz.co.uk/rpi/pigpio/examples.html
   """
@@ -147,119 +164,153 @@ class RotaryEncoder:
       if self.levA == 1:
         self.callback(-1)
 
-class VolumeError(Exception):
+class ActuatorError(Exception):
   pass
 
-class Volume:
+class Actuator:
   """
-  A wrapper API for interacting with the volume settings on the RPi.
+  A wrapper API for interacting with the actuator.
   """
-  MIN = VOLUME_MIN
-  MAX = VOLUME_MAX
-  INCREMENT = VOLUME_INCREMENT
+  MIN = STROKE_MIN
+  MAX = STROKE_MAX
+  INCREMENT = STROKE_INCREMENT
   
   def __init__(self):
-    # Set an initial value for last_volume in case we're muted when we start.
-    self.last_volume = self.MIN
-    self._sync()
-  
-  def up(self):
+    # TODO grab actuator position at startup
+    self.last_pos = STROKE_RESET
+    self.pos_cmd = self.last_pos
+    self._motion_enable = 1
+
+  def extend(self):
     """
-    Increases the volume by one increment.
+    Extends the actuator by one increment.
     """
     return self.change(self.INCREMENT)
-    
-  def down(self):
+
+  def retract(self):
     """
-    Decreases the volume by one increment.
+    Retracts the actuator by one increment.
     """
     return self.change(-self.INCREMENT)
-    
+
   def change(self, delta):
-    v = self.volume + delta
-    v = self._constrain(v)
-    return self.set_volume(v)
-  
-  def set_volume(self, v):
-    """
-    Sets volume to a specific value.
-    """
-    self.volume = self._constrain(v)
-    output = self.amixer("set 'PCM' unmute {}%".format(v))
-    self._sync(output)
-    return self.volume
-    
-  def toggle(self):
-    """
-    Toggles muting between on and off.
-    """
-    if self.is_muted:
-      output = self.amixer("set 'PCM' unmute")
-    else:
-      # We're about to mute ourselves, so we should remember the last volume
-      # value we had because we'll want to restore it later.
-      self.last_volume = self.volume
-      output = self.amixer("set 'PCM' mute")
-  
-    self._sync(output)
-    if not self.is_muted:
-      # If we just unmuted ourselves, we should restore whatever volume we
-      # had previously.
-      self.set_volume(self.last_volume)
-    return self.is_muted
-  
-  def status(self):
-    if self.is_muted:
-      return "{}% (muted)".format(self.volume)
-    return "{}%".format(self.volume)
-  
-  # Read the output of `amixer` to get the system volume and mute state.
-  #
-  # This is designed not to do much work because it'll get called with every
-  # click of the knob in either direction, which is why we're doing simple
-  # string scanning and not regular expressions.
-  def _sync(self, output=None):
-    if output is None:
-      output = self.amixer("get 'PCM'")
-      
-    lines = output.readlines()
-    if DEBUG:
-      strings = [line.decode('utf8') for line in lines]
-      debug("OUTPUT:")
-      debug("".join(strings))
-    last = lines[-1].decode('utf-8')
-    
-    # The last line of output will have two values in square brackets. The
-    # first will be the volume (e.g., "[95%]") and the second will be the
-    # mute state ("[off]" or "[on]").
-    i1 = last.rindex('[') + 1
-    i2 = last.rindex(']')
+    p = self.pos_cmd + delta
+    p = self._constrain(p)
+    return self.set_actuator(p)
 
-    self.is_muted = last[i1:i2] == 'off'
-    
-    i1 = last.index('[') + 1
-    i2 = last.index('%')
-    # In between these two will be the percentage value.
-    pct = last[i1:i2]
+  def set_actuator(self, p):
+    """
+    Sets actuator position to a specific value.
+    """
+    self.pos_cmd = self._constrain(p)
+    # self._motion_enable = 1
+    return self.pos_cmd
 
-    self.volume = int(pct)
-  
-  # Ensures the volume value is between our minimum and maximum.
-  def _constrain(self, v):
-    if v < self.MIN:
+  def reset(self, p):
+    """
+    Reset actuator to predefined value
+    """
+    self.pos_cmd = self.constrain(p)
+    return self.pos_cmd
+
+  # Limit the position command to between our minimum and maximum.
+  def _constrain(self, p):
+    if p < self.MIN:
       return self.MIN
-    if v > self.MAX:
+    if p > self.MAX:
       return self.MAX
-    return v
+    return p
+
+  @property
+  def motion_enable(self):
+    return self._motion_enable
+
+  @motion_enable.setter
+  def motion_enable(self, value):
+    self._motion_enable = value
+  
+def encoder_loop():
+  while True:
+    # This is the best way I could come up with to ensure that this script
+    # runs indefinitely without wasting CPU by polling. The main thread will
+    # block quietly while waiting for the event to get flagged. When the knob
+    # is turned we're able to respond immediately, but when it's not being
+    # turned we're not looping at all.
+    #
+    # The 1200-second (20 minute) timeout is a hack; for some reason, if I
+    # don't specify a timeout, I'm unable to get the SIGINT handler above to
+    # work properly. But if there is a timeout set, even if it's a very long
+    # timeout, then Ctrl-C works as intended. No idea why.
+    EVENT.wait(1200)
     
-  def amixer(self, cmd):
-    p = subprocess.Popen("amixer {}".format(cmd), shell=True, stdout=subprocess.PIPE)
-    code = p.wait()
-    if code != 0:
-      raise VolumeError("Unknown error")
-      sys.exit(0)
-    
-    return p.stdout
+    consume_queue()
+    EVENT.clear()
+
+def can_rx_loop():
+  while True:
+    for msg in bus:
+      frame = ''
+      for data in msg.data:
+        frame += bin(data)[2:].zfill(8)[::-1]
+      bin_pos = frame[0:14] #first 14 bits is measured position [mm]
+      bin_curr = frame[14:23] #9 bits, measured current [A]
+      bin_speed = frame[23:28] #5 bits, running speed [%]
+      bin_volterr = frame[28:30] #2 bits, voltage, 00=in range, 01=too lo, 10=too hi
+      bin_temperr = frame[30:32] #2 bits, temp, 00=in range, 01=too lo, 10=too hi
+      bin_motflg = frame[32:33] #1 bit, actuator in motion flag
+      bin_overflg = frame[33:34] #1 bit, current exceeds limit set
+      bin_bkdrvflg = frame[34:35] #1 bit, servo backdrive detected
+      bin_paramflg = frame[35:36] #1 bit, commanded param out of range
+      bin_satflag = frame[36:37] #1 bit, actuator exceeding 90% max capability
+      bin_fatalflag = frame[37:38] #1 bit, actuator needs servicing
+      pos_mm = int(bin_pos[::-1], 2)*MM_BIT
+      curr_amps = int(bin_curr[::-1], 2)*AMP_BIT
+      speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
+
+      pos_cmd = a.pos_cmd
+      timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
+      print("{}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
+            "voltage err={}, temp error={}, " \
+            "motion={}, overload={}, backdrive={}, " \
+            "param={}, saturation={}, fatal={}".format(
+              timestamp, pos_cmd, pos_mm, curr_amps, speed_perc,
+              bin_volterr, bin_temperr, bin_motflg, bin_overflg, 
+              bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
+      # Note, a.motion_enable is written in this thread and accessed in another
+      if abs(pos_cmd - pos_mm) > MOTION_THRESH:
+        a.motion_enable = 1
+      else:
+        a.motion_enable = 0
+    time.sleep(1)
+
+def on_press(value):
+  a.center()
+  print("Reset actuator to: {}".format(a.pos_cmd))
+  EVENT.set()
+
+# This callback runs in the background thread. All it does is put turn
+# events into a queue and flag the main thread to process them. The
+# queueing ensures that we won't miss anything if the knob is turned
+# extremely quickly.
+def on_turn(delta):
+  QUEUE.put(delta)
+  EVENT.set()
+  
+def consume_queue():
+  while not QUEUE.empty():
+    delta = QUEUE.get()
+    handle_delta(delta)
+
+def handle_delta(delta):
+  if delta == 1:
+    pos = a.extend()
+  else:
+    pos = a.retract()
+
+def on_exit(a, b):
+  print("Exiting...")
+  encoder.destroy()
+  sys.exit(0)
 
 
 if __name__ == "__main__":
@@ -268,62 +319,59 @@ if __name__ == "__main__":
   gpioB = GPIO_B
   gpioButton = GPIO_BUTTON
   
-  v = Volume()
-  
-  def on_press(value):
-    v.toggle()
-    print("Toggled mute to: {}".format(v.is_muted))
-    EVENT.set()
-  
-  # This callback runs in the background thread. All it does is put turn
-  # events into a queue and flag the main thread to process them. The
-  # queueing ensures that we won't miss anything if the knob is turned
-  # extremely quickly.
-  def on_turn(delta):
-    QUEUE.put(delta)
-    EVENT.set()
-    
-  def consume_queue():
-    while not QUEUE.empty():
-      delta = QUEUE.get()
-      handle_delta(delta)
-  
-  def handle_delta(delta):
-    if v.is_muted:
-      debug("Unmuting")
-      v.toggle()
-    if delta == 1:
-      vol = v.up()
-    else:
-      vol = v.down()
-    print("Set volume to: {}".format(vol))
-    
-  def on_exit(a, b):
-    print("Exiting...")
-    encoder.destroy()
-    sys.exit(0)
-    
-  debug("Volume knob using pins {} and {}".format(gpioA, gpioB))
+  encoder_thread = threading.Thread(target=encoder_loop)
+  encoder_thread.start()
+
+  a = Actuator()
+
+  # TODO: create a bus instance using 'with' statement,
+  # this will cause bus.shutdown() to be called on the block exit;
+  # many other interfaces are supported as well (see documentation)
+  bus = can.interface.Bus(channel='can0', bustype='socketcan')
+
+  debug("Reading rotary encoder from pins {} and {}".format(gpioA, gpioB))
   
   if gpioButton != None:
-    debug("Volume button using pin {}".format(gpioButton))
+    debug("Reading actuator reset position command from pin {}".format(gpioButton))
   
-  debug("Initial volume: {}".format(v.volume))
+  can_rx_thread = threading.Thread(target=can_rx_loop)
+  can_rx_thread.start()
 
-  encoder = RotaryEncoder(GPIO_A, GPIO_B, callback=on_turn, buttonPin=GPIO_BUTTON, buttonCallback=on_press)
+  encoder = RotaryEncoder(GPIO_A, GPIO_B, callback=on_turn, 
+                          buttonPin=GPIO_BUTTON, buttonCallback=on_press)
   signal.signal(signal.SIGINT, on_exit)
-  
+
+  bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
+  bin_speed = bin(int(SPEED_PERC/PERC_BIT))[2:].zfill(5)[::-1]
+
+  time_after_loop = time.time() # initialization
   while True:
-    # This is the best way I could come up with to ensure that this script
-    # runs indefinitely without wasting CPU by polling. The main thread will
-    # block quietly while waiting for the event to get flagged. When the knob
-    # is turned we're able to respond immediately, but when it's not being
-    # turned we're not looping at all.
-    # 
-    # The 1200-second (20 minute) timeout is a hack; for some reason, if I
-    # don't specify a timeout, I'm unable to get the SIGINT handler above to
-    # work properly. But if there is a timeout set, even if it's a very long
-    # timeout, then Ctrl-C works as intended. No idea why.
-    EVENT.wait(1200)
-    consume_queue()
-    EVENT.clear()
+    time_before_loop = time.time()
+    if time_before_loop - time_after_loop >= (1./CAN_SEND_HZ):
+      real_frequency = time_before_loop - time_after_loop
+      bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
+
+      # TODO if overload bit is high in actuator status message, then
+      # we have to reset motion_enable false before back true
+      motion_enable = bin(int(a.motion_enable))[2:].zfill(1)[::-1]
+
+      # add to this the bits to define current, speed, movement.
+      command = bin_pos + bin_current + bin_speed + motion_enable + \
+                "00000000000000000000000000000000000"
+
+      com_hex = ''
+
+      for i in range(0,8):
+        #reverse order of bits
+        com = command[i*8:(i+1)*8][::-1]
+        # Convert bytes into one big string of hex
+        com_hex+=hex(int(com,2))[2:].zfill(2)
+
+      message1 = can.Message(arbitration_id=CAN1_ID, is_extended_id=True,
+                            data=bytearray.fromhex(com_hex))
+      message2 = can.Message(arbitration_id=CAN2_ID, is_extended_id=True,
+                            data=bytearray.fromhex(com_hex))
+      bus.send(message1, timeout=0.2)
+      bus.send(message2, timeout=0.2)
+
+      time_after_loop = time.time()
