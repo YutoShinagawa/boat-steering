@@ -56,7 +56,7 @@ MOTION_THRESH = 2 #mm
 # actuator feedback messages (AFM).
 # Set the motion bit within the ACM to 1 only when the actuator needs to be
 # moved to a different position; keep 0 all other times
-CAN1_ID = 0x18ef1300 #18=priority 6; ef=actuator command msg; 13=destination addr; 00=source (pi) address
+CAN1_ID = 0x18ef1300 #18=priority 6; ef=actuator cmd msg; 13=destination addr; 00=source (pi) addr
 CAN2_ID = 0x18ef1400
 CAN_SEND_HZ = 10
 
@@ -269,6 +269,7 @@ def can_rx_loop():
 
       pos_cmd = a.pos_cmd
       timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
+      #TODO print id of the actuator the message came from
       print("{}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
             "voltage err={}, temp error={}, " \
             "motion={}, overload={}, backdrive={}, " \
@@ -277,7 +278,7 @@ def can_rx_loop():
               bin_volterr, bin_temperr, bin_motflg, bin_overflg, 
               bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
       # Note, a.motion_enable is written in this thread and accessed in another
-      if abs(pos_cmd - pos_mm) > MOTION_THRESH:
+      if abs(pos_cmd - pos_mm) > MOTION_THRESH and int(bin_overflg) == 0:
         a.motion_enable = 1
       else:
         a.motion_enable = 0
