@@ -31,9 +31,15 @@ DEBUG = False
 # SETTINGS
 # ========
 
-# The two pins that the encoder uses (BCM numbering).
-GPIO_A = 23
-GPIO_B = 24
+# Pins for station 1 steering encoder (BCM numbering).
+GPIO_1S = 17 # take control switch
+GPIO_1A = 23 # encoder ch A
+GPIO_1B = 24 # encoder ch B
+
+# Pins for station 2 steering encoder (BCM numbering).
+GPIO_2S = 27 # take control switch
+GPIO_2A = 5 # encoder ch A
+GPIO_2B = 6 #encoder ch B
 
 # The pin that the knob's button is hooked up to. If you have no button, set
 # this to None.
@@ -87,10 +93,51 @@ QUEUE = Queue()
 # queue completely each time through the loop, so it's guaranteed to catch up.
 EVENT = threading.Event()
 
+GPIO.setmode(GPIO.BCM)
+
 def debug(str):
   if not DEBUG:
     return
   print(str)
+
+class TakeControlSwitch:
+
+  def __init__(self, gpio1S, gpio1A, gpio1B, gpio2S, gpio2A, gpio2B, callback):
+    self.station_controlling = 1
+    self.callback = callback
+    self.gpio1S = gpio1S
+    self.gpio1A = gpio1A
+    self.gpio1B = gpio1B
+    self.gpio2S = gpio2S
+    self.gpio2A = gpio2A
+    self.gpio2B = gpio2B
+    self.encoder = RotaryEncoder(gpio1A, gpio1B, callback=callback)
+
+    GPIO.setup(self.gpio1S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(self.gpio2S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.add_event_detect(self.gpio1S, GPIO.FALLING, self._give_S1_control)
+    GPIO.add_event_detect(self.gpio2S, GPIO.FALLING, self._give_S2_control)
+
+  def _give_S1_control(self, channel):
+    if self.station_controlling != 1:
+      self.encoder.remove_events()
+      self.encoder = RotaryEncoder(self.gpio1A, self.gpio1B, callback=self.callback)
+      self.station_controlling = 1
+      print('station 1 took control')
+
+  def _give_S2_control(self, channel):
+    if self.station_controlling != 2:
+      self.encoder.remove_events()
+      self.encoder = RotaryEncoder(self.gpio2A, self.gpio2B, callback=self.callback)
+      self.station_controlling = 2
+      print('station 2 took control')
+
+  def destroy(self):
+    GPIO.setmode(GPIO.BCM)
+    GPIO.remove_event_detect(self.gpio1S)
+    GPIO.remove_event_detect(self.gpio2S)
+    GPIO.cleanup()
+
 
 class RotaryEncoder:
   """
@@ -133,10 +180,12 @@ class RotaryEncoder:
       GPIO.setup(self.gpioButton, GPIO.IN, pull_up_down=GPIO.PUD_UP)
       GPIO.add_event_detect(self.gpioButton, GPIO.FALLING, self._buttonCallback, bouncetime=500)
     
-    
-  def destroy(self):
+  def remove_events(self):
     GPIO.remove_event_detect(self.gpioA)
     GPIO.remove_event_detect(self.gpioB)
+
+  def destroy(self):
+    self.remove_events()
     GPIO.cleanup()
     
   def _buttonCallback(self, channel):
@@ -229,7 +278,7 @@ class Actuator:
   def motion_enable(self, value):
     self._motion_enable = value
   
-def encoder_loop():
+def process_encoder_events():
   while True:
     # This is the best way I could come up with to ensure that this script
     # runs indefinitely without wasting CPU by polling. The main thread will
@@ -277,7 +326,9 @@ def can_rx_loop():
               timestamp, pos_cmd, pos_mm, curr_amps, speed_perc,
               bin_volterr, bin_temperr, bin_motflg, bin_overflg, 
               bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
+
       # Note, a.motion_enable is written in this thread and accessed in another
+      # If actuator is overloaded, reset by setting motion_enable = 0
       if abs(pos_cmd - pos_mm) > MOTION_THRESH and int(bin_overflg) == 0:
         a.motion_enable = 1
       else:
@@ -310,36 +361,41 @@ def handle_delta(delta):
 
 def on_exit(a, b):
   print("Exiting...")
-  encoder.destroy()
+  tcs.destroy()
   sys.exit(0)
 
 
 if __name__ == "__main__":
   
-  gpioA = GPIO_A
-  gpioB = GPIO_B
-  gpioButton = GPIO_BUTTON
+  # gpioA = GPIO_A
+  # gpioB = GPIO_B
+  # gpioButton = GPIO_BUTTON
   
-  encoder_thread = threading.Thread(target=encoder_loop)
-  encoder_thread.start()
-
-  a = Actuator()
-
   # TODO: create a bus instance using 'with' statement,
   # this will cause bus.shutdown() to be called on the block exit;
   # many other interfaces are supported as well (see documentation)
   bus = can.interface.Bus(channel='can0', bustype='socketcan')
 
-  debug("Reading rotary encoder from pins {} and {}".format(gpioA, gpioB))
-  
-  if gpioButton != None:
-    debug("Reading actuator reset position command from pin {}".format(gpioButton))
-  
+  encoder_thread = threading.Thread(target=process_encoder_events)
+  encoder_thread.start()
+
   can_rx_thread = threading.Thread(target=can_rx_loop)
   can_rx_thread.start()
 
-  encoder = RotaryEncoder(GPIO_A, GPIO_B, callback=on_turn, 
-                          buttonPin=GPIO_BUTTON, buttonCallback=on_press)
+  a = Actuator()
+
+  # define control transfer switch class;
+  # in int, create event handlers for station 1 & 2  "take control switch"
+  # define callback functions that will destroy and recreate new RotaryEncoder object upon control transfer
+
+
+  # debug("Reading rotary encoder from pins {} and {}".format(gpioA, gpioB))
+
+  # if gpioButton != None:
+  #   debug("Reading actuator reset position command from pin {}".format(gpioButton))
+
+  tcs = TakeControlSwitch(GPIO_1S, GPIO_1A, GPIO_1B, GPIO_2S, GPIO_2A, GPIO_2B, callback=on_turn)
+
   signal.signal(signal.SIGINT, on_exit)
 
   bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
