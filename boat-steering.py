@@ -229,6 +229,52 @@ class Actuator:
     self.last_pos = STROKE_RESET
     self.pos_cmd = self.last_pos
     self._motion_enable = 1
+    self.bus = can.interface.Bus(channel='can0', bustype='socketcan')
+    self.can_rx_thread = threading.Thread(target=self.can_rx_loop)
+    self.can_rx_thread.start()
+
+  def can_rx_loop(self):
+    try:
+      print('starting can_rx_loop thread')
+      while True:
+        for msg in self.bus:
+          frame = ''
+          for data in msg.data:
+            frame += bin(data)[2:].zfill(8)[::-1]
+          bin_pos = frame[0:14] #first 14 bits is measured position [mm]
+          bin_curr = frame[14:23] #9 bits, measured current [A]
+          bin_speed = frame[23:28] #5 bits, running speed [%]
+          bin_volterr = frame[28:30] #2 bits, voltage, 00=in range, 01=too lo, 10=too hi
+          bin_temperr = frame[30:32] #2 bits, temp, 00=in range, 01=too lo, 10=too hi
+          bin_motflg = frame[32:33] #1 bit, actuator in motion flag
+          bin_overflg = frame[33:34] #1 bit, current exceeds limit set
+          bin_bkdrvflg = frame[34:35] #1 bit, servo backdrive detected
+          bin_paramflg = frame[35:36] #1 bit, commanded param out of range
+          bin_satflag = frame[36:37] #1 bit, actuator exceeding 90% max capability
+          bin_fatalflag = frame[37:38] #1 bit, actuator needs servicing
+          pos_mm = int(bin_pos[::-1], 2)*MM_BIT
+          curr_amps = int(bin_curr[::-1], 2)*AMP_BIT
+          speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
+
+          pos_cmd = self.pos_cmd
+          timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
+          #TODO print id of the actuator the message came from
+          print("{}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
+                "voltage err={}, temp error={}, " \
+                "motion={}, overload={}, backdrive={}, " \
+                "param={}, saturation={}, fatal={}".format(
+                  timestamp, pos_cmd, pos_mm, curr_amps, speed_perc,
+                  bin_volterr, bin_temperr, bin_motflg, bin_overflg,
+                  bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
+          # Note, self.motion_enable is written in this thread and accessed in another
+          if abs(pos_cmd - pos_mm) > MOTION_THRESH and int(bin_overflg) == 0:
+            self.motion_enable = 1
+          else:
+            self.motion_enable = 0
+        time.sleep(1)
+    except Exception as e:
+      print(f"Exception in can_rx_loop: {e}")
+
 
   def extend(self):
     """
@@ -295,46 +341,6 @@ def process_encoder_events():
     consume_queue()
     EVENT.clear()
 
-def can_rx_loop():
-  while True:
-    for msg in bus:
-      frame = ''
-      for data in msg.data:
-        frame += bin(data)[2:].zfill(8)[::-1]
-      bin_pos = frame[0:14] #first 14 bits is measured position [mm]
-      bin_curr = frame[14:23] #9 bits, measured current [A]
-      bin_speed = frame[23:28] #5 bits, running speed [%]
-      bin_volterr = frame[28:30] #2 bits, voltage, 00=in range, 01=too lo, 10=too hi
-      bin_temperr = frame[30:32] #2 bits, temp, 00=in range, 01=too lo, 10=too hi
-      bin_motflg = frame[32:33] #1 bit, actuator in motion flag
-      bin_overflg = frame[33:34] #1 bit, current exceeds limit set
-      bin_bkdrvflg = frame[34:35] #1 bit, servo backdrive detected
-      bin_paramflg = frame[35:36] #1 bit, commanded param out of range
-      bin_satflag = frame[36:37] #1 bit, actuator exceeding 90% max capability
-      bin_fatalflag = frame[37:38] #1 bit, actuator needs servicing
-      pos_mm = int(bin_pos[::-1], 2)*MM_BIT
-      curr_amps = int(bin_curr[::-1], 2)*AMP_BIT
-      speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
-
-      pos_cmd = a.pos_cmd
-      timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
-      #TODO print id of the actuator the message came from
-      print("{}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
-            "voltage err={}, temp error={}, " \
-            "motion={}, overload={}, backdrive={}, " \
-            "param={}, saturation={}, fatal={}".format(
-              timestamp, pos_cmd, pos_mm, curr_amps, speed_perc,
-              bin_volterr, bin_temperr, bin_motflg, bin_overflg, 
-              bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
-
-      # Note, a.motion_enable is written in this thread and accessed in another
-      # If actuator is overloaded, reset by setting motion_enable = 0
-      if abs(pos_cmd - pos_mm) > MOTION_THRESH and int(bin_overflg) == 0:
-        a.motion_enable = 1
-      else:
-        a.motion_enable = 0
-    time.sleep(1)
-
 def on_press(value):
   a.center()
   print("Reset actuator to: {}".format(a.pos_cmd))
@@ -379,11 +385,7 @@ if __name__ == "__main__":
   encoder_thread = threading.Thread(target=process_encoder_events)
   encoder_thread.start()
 
-  can_rx_thread = threading.Thread(target=can_rx_loop)
-  can_rx_thread.start()
-
   a = Actuator()
-
   # define control transfer switch class;
   # in int, create event handlers for station 1 & 2  "take control switch"
   # define callback functions that will destroy and recreate new RotaryEncoder object upon control transfer
