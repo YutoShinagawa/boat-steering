@@ -32,14 +32,16 @@ DEBUG = False
 # ========
 
 # Pins for station 1 steering encoder (BCM numbering).
-GPIO_1S = 17 # take control switch
-GPIO_1A = 23 # encoder ch A
-GPIO_1B = 24 # encoder ch B
+GPIO_1S = 26 # take control switch
+GPIO_1A = 5 # encoder ch A
+GPIO_1B = 6 # encoder ch B
+GPIO_1LED = 22 #station 1 in control LED
 
 # Pins for station 2 steering encoder (BCM numbering).
-GPIO_2S = 27 # take control switch
-GPIO_2A = 5 # encoder ch A
-GPIO_2B = 6 #encoder ch B
+GPIO_2S = 16 # take control switch
+GPIO_2A = 23 # encoder ch A
+GPIO_2B = 24 #encoder ch B
+GPIO_2LED = 27 #station 2 in control LED
 
 # The pin that the knob's button is hooked up to. If you have no button, set
 # this to None.
@@ -102,42 +104,56 @@ def debug(str):
 
 class TakeControlSwitch:
 
-  def __init__(self, gpio1S, gpio1A, gpio1B, gpio2S, gpio2A, gpio2B, callback):
-    self.station_controlling = 1
+  def __init__(self, gpio1S, gpio1LED, gpio1A, gpio1B, gpio2S, gpio2LED, gpio2A, gpio2B, callback):
+
     self.callback = callback
     self.gpio1S = gpio1S
+    self.gpio1LED = gpio1LED
     self.gpio1A = gpio1A
     self.gpio1B = gpio1B
     self.gpio2S = gpio2S
+    self.gpio2LED = gpio2LED
     self.gpio2A = gpio2A
     self.gpio2B = gpio2B
-    self.encoder = RotaryEncoder(gpio1A, gpio1B, callback=callback)
-
+    GPIO.setmode(GPIO.BCM)
     GPIO.setup(self.gpio1S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(self.gpio2S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.add_event_detect(self.gpio1S, GPIO.FALLING, self._give_S1_control)
-    GPIO.add_event_detect(self.gpio2S, GPIO.FALLING, self._give_S2_control)
+    GPIO.setup(self.gpio1LED, GPIO.OUT)
+    GPIO.setup(self.gpio2LED, GPIO.OUT)
+    GPIO.add_event_detect(self.gpio1S, GPIO.FALLING, self._give_S1_control, bouncetime=200)
+    GPIO.add_event_detect(self.gpio2S, GPIO.FALLING, self._give_S2_control, bouncetime=200)
+
+    # Initialize with station 1 in control
+    self.station_controlling = 1
+    self.encoder = RotaryEncoder(gpio1A, gpio1B, callback=callback)
+    GPIO.output(self.gpio1LED, 0)
+    GPIO.output(self.gpio2LED, 1)
 
   def _give_S1_control(self, channel):
     if self.station_controlling != 1:
       self.encoder.remove_events()
       self.encoder = RotaryEncoder(self.gpio1A, self.gpio1B, callback=self.callback)
       self.station_controlling = 1
-      print('station 1 took control')
+      # Relay turns on LED when channel is driven low
+      GPIO.output(self.gpio1LED, 0)
+      GPIO.output(self.gpio2LED, 1)
+      print('station 1 in control')
 
   def _give_S2_control(self, channel):
     if self.station_controlling != 2:
       self.encoder.remove_events()
       self.encoder = RotaryEncoder(self.gpio2A, self.gpio2B, callback=self.callback)
       self.station_controlling = 2
-      print('station 2 took control')
+      # Relay turns on LED when channel is driven low
+      GPIO.output(self.gpio1LED, 1)
+      GPIO.output(self.gpio2LED, 0)
+      print('station 2 in control')
 
   def destroy(self):
     GPIO.setmode(GPIO.BCM)
     GPIO.remove_event_detect(self.gpio1S)
     GPIO.remove_event_detect(self.gpio2S)
     GPIO.cleanup()
-
 
 class RotaryEncoder:
   """
@@ -259,11 +275,11 @@ class Actuator:
           pos_cmd = self.pos_cmd
           timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
           #TODO print id of the actuator the message came from
-          print("{}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
+          print("{}, id={}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
                 "voltage err={}, temp error={}, " \
                 "motion={}, overload={}, backdrive={}, " \
                 "param={}, saturation={}, fatal={}".format(
-                  timestamp, pos_cmd, pos_mm, curr_amps, speed_perc,
+                  timestamp, hex(msg.arbitration_id), pos_cmd, pos_mm, curr_amps, speed_perc,
                   bin_volterr, bin_temperr, bin_motflg, bin_overflg,
                   bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
           # Note, self.motion_enable is written in this thread and accessed in another
@@ -396,7 +412,9 @@ if __name__ == "__main__":
   # if gpioButton != None:
   #   debug("Reading actuator reset position command from pin {}".format(gpioButton))
 
-  tcs = TakeControlSwitch(GPIO_1S, GPIO_1A, GPIO_1B, GPIO_2S, GPIO_2A, GPIO_2B, callback=on_turn)
+  tcs = TakeControlSwitch(GPIO_1S, GPIO_1LED, GPIO_1A, GPIO_1B,
+                          GPIO_2S, GPIO_2LED, GPIO_2A, GPIO_2B,
+                          callback=on_turn)
 
   signal.signal(signal.SIGINT, on_exit)
 
