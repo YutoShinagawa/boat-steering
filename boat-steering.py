@@ -267,7 +267,7 @@ class CAN:
           a.pos_mm = pos_mm
           a.overflg = int(bin_overflg)
           timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
-          #TODO print id of the actuator the message came from
+
           print("{}, id={}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
                 "voltage err={}, temp error={}, " \
                 "motion={}, overload={}, backdrive={}, " \
@@ -291,37 +291,36 @@ class CAN:
         time_before_loop = time.time()
         #TODO: consider creating separate tx threads for each actuator
         if time_before_loop - time_after_loop >= (1./CAN_SEND_HZ):
-          # for loop to construct each actuator's outgoing message
-            for id,a in self.actuatorMap.items():
-              # If overload bit is high in actuator status message, then
-              # we have to reset motion_enable false before back true
-              if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and a.overflg == 0:
-                motion_enable = bin(int(1))[2:].zfill(1)[::-1]
-              else:
-                motion_enable = bin(int(0))[2:].zfill(1)[::-1]
+          for id,a in self.actuatorMap.items():
+            # If overload bit is high in actuator status message, then
+            # we have to reset motion_enable false before back true
+            if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and a.overflg == 0:
+              motion_enable = bin(int(1))[2:].zfill(1)[::-1]
+            else:
+              motion_enable = bin(int(0))[2:].zfill(1)[::-1]
 
-              bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
+            bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
 
-              # add to this the bits to define current, speed, movement.
-              command = bin_pos + bin_current + bin_speed + motion_enable + \
-                    "00000000000000000000000000000000000"
+            # add to this the bits to define current, speed, movement.
+            command = bin_pos + bin_current + bin_speed + motion_enable + \
+                  "00000000000000000000000000000000000"
 
-              com_hex = ''
+            com_hex = ''
 
-              for i in range(0,8):
-                #reverse order of bits
-                com = command[i*8:(i+1)*8][::-1]
-                # Convert bytes into one big string of hex
-                com_hex+=hex(int(com,2))[2:].zfill(2)
+            for i in range(0,8):
+              #reverse order of bits
+              com = command[i*8:(i+1)*8][::-1]
+              # Convert bytes into one big string of hex
+              com_hex+=hex(int(com,2))[2:].zfill(2)
 
-              #18=priority 6; ef=actuator cmd msg; 13=destination addr; 00=source (pi) addr
-              ARBIT_ID = id << 8 | 0x18ef0000
+            #18=priority 6; ef=actuator cmd msg; 13=destination addr; 00=source (pi) addr
+            ARBIT_ID = id << 8 | 0x18ef0000
 
-              message = can.Message(arbitration_id=ARBIT_ID, is_extended_id=True,
-                                     data=bytearray.fromhex(com_hex))
-              self.bus.send(message, timeout=0.2)
+            message = can.Message(arbitration_id=ARBIT_ID, is_extended_id=True,
+                                    data=bytearray.fromhex(com_hex))
+            self.bus.send(message, timeout=0.2)
 
-              time_after_loop = time.time()
+          time_after_loop = time.time()
     except Exception as e:
       print(f"Exception in can_tx_loop: {e}")
 
