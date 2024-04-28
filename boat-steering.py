@@ -47,13 +47,10 @@ GPIO_2LED = 27 #station 2 in control LED
 # this to None.
 GPIO_BUTTON = None
 
-# The minimum and maximum steering angle in mm
+# The minimum and maximum actuator stroke in mm
 STROKE_MIN = 0 #mm
 STROKE_MAX = 150 #mm
 STROKE_RESET = 75 #mm
-
-# The amount you want one click of the knob to increase or decrease the command stroke
-STROKE_INCREMENT = 1 #mm
 
 # Controller will command the servo to move if the feedback position deviates from the
 # command reference by more than the threshold below
@@ -74,8 +71,14 @@ AMP_BIT = 0.1
 PERC_BIT = 5
 
 # CONFIGURABLE ACTUATOR SETTINGS
-CURRENT_AMPS = 20
-SPEED_PERC = 25
+CURRENT_AMPS = 20 # max allowable current draw
+SPEED_PERC = 25 # target speed as a % of max speed
+
+# The amount you want one click of the knob to increase or decrease the rudder angle
+RUD_INCR = 1 #deg
+RUD_MIN = -45 #deg
+RUD_MAX = 45 #deg
+TOE_IN = 5 #deg
 
 # (END SETTINGS)
 
@@ -102,56 +105,58 @@ def debug(str):
   print(str)
 
 class TakeControlSwitch:
+  GPIO_1S = GPIO_1S # take control switch
+  GPIO_1A = GPIO_1A # encoder ch A
+  GPIO_1B = GPIO_1B # encoder ch B
+  GPIO_1LED = GPIO_1LED # station 1 in control LED
 
-  def __init__(self, gpio1S, gpio1LED, gpio1A, gpio1B, gpio2S, gpio2LED, gpio2A, gpio2B, callback):
+  # Pins for station 2 steering encoder (BCM numbering).
+  GPIO_2S = GPIO_2S # take control switch
+  GPIO_2A = GPIO_2A # encoder ch A
+  GPIO_2B = GPIO_2B # encoder ch B
+  GPIO_2LED = GPIO_2LED # station 2 in control LED
+
+  def __init__(self, callback):
 
     self.callback = callback
-    self.gpio1S = gpio1S
-    self.gpio1LED = gpio1LED
-    self.gpio1A = gpio1A
-    self.gpio1B = gpio1B
-    self.gpio2S = gpio2S
-    self.gpio2LED = gpio2LED
-    self.gpio2A = gpio2A
-    self.gpio2B = gpio2B
 
-    GPIO.setup(self.gpio1S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(self.gpio2S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(self.gpio1LED, GPIO.OUT)
-    GPIO.setup(self.gpio2LED, GPIO.OUT)
-    GPIO.add_event_detect(self.gpio1S, GPIO.FALLING, self._give_S1_control, bouncetime=200)
-    GPIO.add_event_detect(self.gpio2S, GPIO.FALLING, self._give_S2_control, bouncetime=200)
+    GPIO.setup(self.GPIO_1S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(self.GPIO_2S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(self.GPIO_1LED, GPIO.OUT)
+    GPIO.setup(self.GPIO_2LED, GPIO.OUT)
+    GPIO.add_event_detect(self.GPIO_1S, GPIO.FALLING, self._give_S1_control, bouncetime=200)
+    GPIO.add_event_detect(self.GPIO_2S, GPIO.FALLING, self._give_S2_control, bouncetime=200)
 
     # Initialize with station 1 in control
     self.station_controlling = 1
-    self.encoder = RotaryEncoder(gpio1A, gpio1B, callback=callback)
-    GPIO.output(self.gpio1LED, 0)
-    GPIO.output(self.gpio2LED, 1)
+    self.encoder = RotaryEncoder(self.GPIO_1A, self.GPIO_1B, callback=callback)
+    GPIO.output(self.GPIO_1LED, 0)
+    GPIO.output(self.GPIO_2LED, 1)
 
   def _give_S1_control(self, channel):
     if self.station_controlling != 1:
       self.encoder.remove_events()
-      self.encoder = RotaryEncoder(self.gpio1A, self.gpio1B, callback=self.callback)
+      self.encoder = RotaryEncoder(self.GPIO_1A, self.GPIO_1B, callback=self.callback)
       self.station_controlling = 1
       # Relay turns on LED when channel is driven low
-      GPIO.output(self.gpio1LED, 0)
-      GPIO.output(self.gpio2LED, 1)
+      GPIO.output(self.GPIO_1LED, 0)
+      GPIO.output(self.GPIO_2LED, 1)
       print('station 1 in control')
 
   def _give_S2_control(self, channel):
     if self.station_controlling != 2:
       self.encoder.remove_events()
-      self.encoder = RotaryEncoder(self.gpio2A, self.gpio2B, callback=self.callback)
+      self.encoder = RotaryEncoder(self.GPIO_2A, self.GPIO_2B, callback=self.callback)
       self.station_controlling = 2
       # Relay turns on LED when channel is driven low
-      GPIO.output(self.gpio1LED, 1)
-      GPIO.output(self.gpio2LED, 0)
+      GPIO.output(self.GPIO_1LED, 1)
+      GPIO.output(self.GPIO_2LED, 0)
       print('station 2 in control')
 
   def destroy(self):
     self.encoder.destroy()
-    GPIO.remove_event_detect(self.gpio1S)
-    GPIO.remove_event_detect(self.gpio2S)
+    GPIO.remove_event_detect(self.GPIO_1S)
+    GPIO.remove_event_detect(self.GPIO_2S)
 
 class RotaryEncoder:
   """
@@ -334,7 +339,6 @@ class Actuator:
   """
   MIN = STROKE_MIN
   MAX = STROKE_MAX
-  INCREMENT = STROKE_INCREMENT
 
   def __init__(self, nodeID):
     # TODO grab actuator position at startup
@@ -343,17 +347,17 @@ class Actuator:
     self._pos_mm = 0
     self._overflg = 0
 
-  def extend(self):
+  def extend(self, delta):
     """
     Extends the actuator by one increment.
     """
-    return self.change(self.INCREMENT)
+    return self.change(delta)
 
-  def retract(self):
+  def retract(self, delta):
     """
     Retracts the actuator by one increment.
     """
-    return self.change(-self.INCREMENT)
+    return self.change(-delta)
 
   def change(self, delta):
     p = self.pos_cmd + delta
@@ -398,6 +402,47 @@ class Actuator:
   def overflg(self, value):
     self._overflg = value
 
+
+class Rudder:
+  RUD_MIN = RUD_MIN
+  RUD_MAX = RUD_MAX
+  TOE_IN = TOE_IN
+
+  def __init__(self, a1, a2):
+    self.pos_deg = 0
+    self.a1 = a1 # port actuator
+    self.a2 = a2 # starboard actuator
+
+  def change(self, delta):
+    p = self.pos_deg + delta
+    p = self._constrain(p)
+    return self.set_rudder(p)
+
+  def set_rudder(self, p):
+    """
+    Set the rudder angle to a specific value.
+    """
+    self.pos_deg = self._constrain(p)
+    pos1_mm, pos2_mm = self._calc_actuator_pos()
+    self.a1.set_actuator(pos1_mm)
+    self.a2.set_actuator(pos2_mm)
+    print("{} and {}".format(pos1_mm, pos2_mm))
+    return self.pos_deg
+
+  def _constrain(self, p):
+    if p < self.RUD_MIN:
+      return self.RUD_MIN
+    if p > self.RUD_MAX:
+      return self.RUD_MAX
+    return p
+
+  def _calc_actuator_pos(self):
+    #TODO actual mapping between rudder angle and actuator position is defined by kinematics, which is likely nonlinear
+    pos1_mm = (self.a1.MAX - self.a1.MIN) / (self.RUD_MAX - self.RUD_MIN) * self._constrain(self.pos_deg - self.TOE_IN) + self.a1.MIN
+    pos2_mm = (self.a2.MAX - self.a2.MIN) / (self.RUD_MAX - self.RUD_MIN) * self._constrain(self.pos_deg + self.TOE_IN) + self.a2.MIN
+    return pos1_mm, pos2_mm
+
+
 def process_encoder_events():
   while True:
     # This is the best way I could come up with to ensure that this script
@@ -435,11 +480,11 @@ def consume_queue():
 
 def handle_delta(delta):
   if delta == 1:
-    pos = a1.extend()
-    pos = a2.extend()
+    # positive increment is starboard
+    pos_deg = r.change(RUD_INCR)
   else:
-    pos = a1.retract()
-    pos = a2.retract()
+    # negative increment is port
+    pos_deg = r.change(-RUD_INCR)
 
 def on_exit(a, b):
   print("Exiting...")
@@ -462,14 +507,14 @@ if __name__ == "__main__":
 
   c  = CAN(actuatorMap)
 
-  encoder_thread = threading.Thread(target=process_encoder_events)
-  encoder_thread.start()
-
   # debug("Reading rotary encoder from pins {} and {}".format(gpioA, gpioB))
 
   # if gpioButton != None:
   #   debug("Reading actuator reset position command from pin {}".format(gpioButton))
 
-  tcs = TakeControlSwitch(GPIO_1S, GPIO_1LED, GPIO_1A, GPIO_1B,
-                          GPIO_2S, GPIO_2LED, GPIO_2A, GPIO_2B,
-                          callback=on_turn)
+  r = Rudder(a1,a2)
+
+  encoder_thread = threading.Thread(target=process_encoder_events)
+  encoder_thread.start()
+
+  tcs = TakeControlSwitch(callback=on_turn)
