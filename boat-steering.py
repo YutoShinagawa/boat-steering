@@ -57,15 +57,15 @@ STROKE_INCREMENT = 1 #mm
 
 # Controller will command the servo to move if the feedback position deviates from the
 # command reference by more than the threshold below
-MOTION_THRESH = 2 #mm
+MOTION_THRESH = 1 #mm
 
 # Send SAEJ1939 actuator control messages (ACM) at fixed rate even if the
 # actuator isn't being actively moved so that we continue to get periodic
 # actuator feedback messages (AFM).
 # Set the motion bit within the ACM to 1 only when the actuator needs to be
 # moved to a different position; keep 0 all other times
-CAN1_ID = 0x18ef1300 #18=priority 6; ef=actuator cmd msg; 13=destination addr; 00=source (pi) addr
-CAN2_ID = 0x18ef1400
+CAN1_ID = 0x13
+CAN2_ID = 0x14
 CAN_SEND_HZ = 10
 
 # CAN MSG bit to engineering unit scaling factors
@@ -76,7 +76,6 @@ PERC_BIT = 5
 # CONFIGURABLE ACTUATOR SETTINGS
 CURRENT_AMPS = 20
 SPEED_PERC = 25
-
 
 # (END SETTINGS)
 
@@ -115,7 +114,7 @@ class TakeControlSwitch:
     self.gpio2LED = gpio2LED
     self.gpio2A = gpio2A
     self.gpio2B = gpio2B
-    GPIO.setmode(GPIO.BCM)
+
     GPIO.setup(self.gpio1S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(self.gpio2S, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(self.gpio1LED, GPIO.OUT)
@@ -150,10 +149,9 @@ class TakeControlSwitch:
       print('station 2 in control')
 
   def destroy(self):
-    GPIO.setmode(GPIO.BCM)
+    self.encoder.destroy()
     GPIO.remove_event_detect(self.gpio1S)
     GPIO.remove_event_detect(self.gpio2S)
-    GPIO.cleanup()
 
 class RotaryEncoder:
   """
@@ -185,7 +183,6 @@ class RotaryEncoder:
     self.levA = 0
     self.levB = 0
     
-    GPIO.setmode(GPIO.BCM)
     GPIO.setup(self.gpioA, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(self.gpioB, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
@@ -202,7 +199,6 @@ class RotaryEncoder:
 
   def destroy(self):
     self.remove_events()
-    GPIO.cleanup()
     
   def _buttonCallback(self, channel):
     self.buttonCallback(GPIO.input(channel))
@@ -229,25 +225,18 @@ class RotaryEncoder:
       if self.levA == 1:
         self.callback(-1)
 
-class ActuatorError(Exception):
-  pass
+class CAN:
 
-class Actuator:
-  """
-  A wrapper API for interacting with the actuator.
-  """
-  MIN = STROKE_MIN
-  MAX = STROKE_MAX
-  INCREMENT = STROKE_INCREMENT
-  
-  def __init__(self):
-    # TODO grab actuator position at startup
-    self.last_pos = STROKE_RESET
-    self.pos_cmd = self.last_pos
-    self._motion_enable = 1
+  def __init__(self, actuatorMap):
+    self.actuatorMap = actuatorMap
+    # TODO: create a bus instance using 'with' statement,
+    # this will cause bus.shutdown() to be called on the block exit;
+    # many other interfaces are supported as well (see documentation)
     self.bus = can.interface.Bus(channel='can0', bustype='socketcan')
     self.can_rx_thread = threading.Thread(target=self.can_rx_loop)
     self.can_rx_thread.start()
+    self.can_tx_thread = threading.Thread(target=self.can_tx_loop)
+    self.can_tx_thread.start()
 
   def can_rx_loop(self):
     try:
@@ -272,25 +261,88 @@ class Actuator:
           curr_amps = int(bin_curr[::-1], 2)*AMP_BIT
           speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
 
-          pos_cmd = self.pos_cmd
+          source_id = msg.arbitration_id & 0XFF
+          # TODO: handle case where source_id is not in dictionary
+          a = self.actuatorMap[source_id]
+          a.pos_mm = pos_mm
+          a.overflg = int(bin_overflg)
           timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
           #TODO print id of the actuator the message came from
           print("{}, id={}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
                 "voltage err={}, temp error={}, " \
                 "motion={}, overload={}, backdrive={}, " \
                 "param={}, saturation={}, fatal={}".format(
-                  timestamp, hex(msg.arbitration_id), pos_cmd, pos_mm, curr_amps, speed_perc,
+                  timestamp, hex(msg.arbitration_id), a.pos_cmd, pos_mm, curr_amps, speed_perc,
                   bin_volterr, bin_temperr, bin_motflg, bin_overflg,
                   bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
-          # Note, self.motion_enable is written in this thread and accessed in another
-          if abs(pos_cmd - pos_mm) > MOTION_THRESH and int(bin_overflg) == 0:
-            self.motion_enable = 1
-          else:
-            self.motion_enable = 0
+
         time.sleep(1)
     except Exception as e:
       print(f"Exception in can_rx_loop: {e}")
 
+  def can_tx_loop(self):
+    try:
+      print('starting can_tx_loop thread')
+      bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
+      bin_speed = bin(int(SPEED_PERC/PERC_BIT))[2:].zfill(5)[::-1]
+
+      time_after_loop = time.time() # initialization
+      while True:
+        time_before_loop = time.time()
+        #TODO: consider creating separate tx threads for each actuator
+        if time_before_loop - time_after_loop >= (1./CAN_SEND_HZ):
+          # for loop to construct each actuator's outgoing message
+            for id,a in self.actuatorMap.items():
+              # If overload bit is high in actuator status message, then
+              # we have to reset motion_enable false before back true
+              if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and a.overflg == 0:
+                motion_enable = bin(int(1))[2:].zfill(1)[::-1]
+              else:
+                motion_enable = bin(int(0))[2:].zfill(1)[::-1]
+
+              bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
+
+              # add to this the bits to define current, speed, movement.
+              command = bin_pos + bin_current + bin_speed + motion_enable + \
+                    "00000000000000000000000000000000000"
+
+              com_hex = ''
+
+              for i in range(0,8):
+                #reverse order of bits
+                com = command[i*8:(i+1)*8][::-1]
+                # Convert bytes into one big string of hex
+                com_hex+=hex(int(com,2))[2:].zfill(2)
+
+              #18=priority 6; ef=actuator cmd msg; 13=destination addr; 00=source (pi) addr
+              ARBIT_ID = id << 8 | 0x18ef0000
+
+              message = can.Message(arbitration_id=ARBIT_ID, is_extended_id=True,
+                                     data=bytearray.fromhex(com_hex))
+              self.bus.send(message, timeout=0.2)
+
+              time_after_loop = time.time()
+    except Exception as e:
+      print(f"Exception in can_tx_loop: {e}")
+
+class ActuatorError(Exception):
+  pass
+
+
+class Actuator:
+  """
+  A wrapper API for interacting with the actuator.
+  """
+  MIN = STROKE_MIN
+  MAX = STROKE_MAX
+  INCREMENT = STROKE_INCREMENT
+
+  def __init__(self, nodeID):
+    # TODO grab actuator position at startup
+    self.nodeID = nodeID
+    self.pos_cmd = STROKE_RESET
+    self._pos_mm = 0
+    self._overflg = 0
 
   def extend(self):
     """
@@ -314,7 +366,6 @@ class Actuator:
     Sets actuator position to a specific value.
     """
     self.pos_cmd = self._constrain(p)
-    # self._motion_enable = 1
     return self.pos_cmd
 
   def reset(self, p):
@@ -333,13 +384,21 @@ class Actuator:
     return p
 
   @property
-  def motion_enable(self):
-    return self._motion_enable
+  def pos_mm(self):
+    return self._pos_mm
 
-  @motion_enable.setter
-  def motion_enable(self, value):
-    self._motion_enable = value
-  
+  @pos_mm.setter
+  def pos_mm(self, value):
+    self._pos_mm = value
+
+  @property
+  def overflg(self):
+    return self._overflg
+
+  @overflg.setter
+  def overflg(self, value):
+    self._overflg = value
+
 def process_encoder_events():
   while True:
     # This is the best way I could come up with to ensure that this script
@@ -357,10 +416,10 @@ def process_encoder_events():
     consume_queue()
     EVENT.clear()
 
-def on_press(value):
-  a.center()
-  print("Reset actuator to: {}".format(a.pos_cmd))
-  EVENT.set()
+# def on_press(value):
+#   a.center()
+#   print("Reset actuator to: {}".format(a.pos_cmd))
+#   EVENT.set()
 
 # This callback runs in the background thread. All it does is put turn
 # events into a queue and flag the main thread to process them. The
@@ -377,35 +436,35 @@ def consume_queue():
 
 def handle_delta(delta):
   if delta == 1:
-    pos = a.extend()
+    pos = a1.extend()
+    pos = a2.extend()
   else:
-    pos = a.retract()
+    pos = a1.retract()
+    pos = a2.retract()
 
 def on_exit(a, b):
   print("Exiting...")
   tcs.destroy()
+  GPIO.cleanup()
   sys.exit(0)
 
 
 if __name__ == "__main__":
   
-  # gpioA = GPIO_A
-  # gpioB = GPIO_B
-  # gpioButton = GPIO_BUTTON
+  signal.signal(signal.SIGINT, on_exit)
+
+  a1 = Actuator(CAN1_ID) # Port actuator
+  a2 = Actuator(CAN2_ID) # Starboard actuator
   
-  # TODO: create a bus instance using 'with' statement,
-  # this will cause bus.shutdown() to be called on the block exit;
-  # many other interfaces are supported as well (see documentation)
-  bus = can.interface.Bus(channel='can0', bustype='socketcan')
+  actuatorMap = {
+    CAN1_ID: a1,
+    CAN2_ID: a2,
+  }
+
+  c  = CAN(actuatorMap)
 
   encoder_thread = threading.Thread(target=process_encoder_events)
   encoder_thread.start()
-
-  a = Actuator()
-  # define control transfer switch class;
-  # in int, create event handlers for station 1 & 2  "take control switch"
-  # define callback functions that will destroy and recreate new RotaryEncoder object upon control transfer
-
 
   # debug("Reading rotary encoder from pins {} and {}".format(gpioA, gpioB))
 
@@ -415,40 +474,3 @@ if __name__ == "__main__":
   tcs = TakeControlSwitch(GPIO_1S, GPIO_1LED, GPIO_1A, GPIO_1B,
                           GPIO_2S, GPIO_2LED, GPIO_2A, GPIO_2B,
                           callback=on_turn)
-
-  signal.signal(signal.SIGINT, on_exit)
-
-  bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
-  bin_speed = bin(int(SPEED_PERC/PERC_BIT))[2:].zfill(5)[::-1]
-
-  time_after_loop = time.time() # initialization
-  while True:
-    time_before_loop = time.time()
-    if time_before_loop - time_after_loop >= (1./CAN_SEND_HZ):
-      real_frequency = time_before_loop - time_after_loop
-      bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
-
-      # TODO if overload bit is high in actuator status message, then
-      # we have to reset motion_enable false before back true
-      motion_enable = bin(int(a.motion_enable))[2:].zfill(1)[::-1]
-
-      # add to this the bits to define current, speed, movement.
-      command = bin_pos + bin_current + bin_speed + motion_enable + \
-                "00000000000000000000000000000000000"
-
-      com_hex = ''
-
-      for i in range(0,8):
-        #reverse order of bits
-        com = command[i*8:(i+1)*8][::-1]
-        # Convert bytes into one big string of hex
-        com_hex+=hex(int(com,2))[2:].zfill(2)
-
-      message1 = can.Message(arbitration_id=CAN1_ID, is_extended_id=True,
-                            data=bytearray.fromhex(com_hex))
-      message2 = can.Message(arbitration_id=CAN2_ID, is_extended_id=True,
-                            data=bytearray.fromhex(com_hex))
-      bus.send(message1, timeout=0.2)
-      bus.send(message2, timeout=0.2)
-
-      time_after_loop = time.time()
