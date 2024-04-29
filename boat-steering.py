@@ -78,7 +78,7 @@ SPEED_PERC = 25 # target speed as a % of max speed
 RUD_INCR = 1 #deg
 RUD_MIN = -45 #deg
 RUD_MAX = 45 #deg
-TOE_IN = 5 #deg
+TOE_IN = 0 #deg
 
 # (END SETTINGS)
 
@@ -248,6 +248,7 @@ class CAN:
       print('starting can_rx_loop thread')
       while True:
         for msg in self.bus:
+          timestamp = datetime.datetime.now()
           frame = ''
           for data in msg.data:
             frame += bin(data)[2:].zfill(8)[::-1]
@@ -267,17 +268,22 @@ class CAN:
           speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
 
           source_id = msg.arbitration_id & 0XFF
+
           # TODO: handle case where source_id is not in dictionary
+          #return actuator object corresponding to the sender's id
           a = self.actuatorMap[source_id]
           a.pos_mm = pos_mm
           a.overflg = int(bin_overflg)
-          timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-4]
+          a.lst_update = timestamp
+          if a.pos_cmd is None:
+            a.pos_cmd = pos_mm
 
+          timestr = timestamp.strftime("%H:%M:%S.%f")[:-4]
           print("{}, id={}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
                 "voltage err={}, temp error={}, " \
                 "motion={}, overload={}, backdrive={}, " \
                 "param={}, saturation={}, fatal={}".format(
-                  timestamp, hex(msg.arbitration_id), a.pos_cmd, pos_mm, curr_amps, speed_perc,
+                  timestr, hex(msg.arbitration_id), a.pos_cmd, pos_mm, curr_amps, speed_perc,
                   bin_volterr, bin_temperr, bin_motflg, bin_overflg,
                   bin_bkdrvflg, bin_paramflg, bin_satflag, bin_fatalflag))
 
@@ -299,10 +305,11 @@ class CAN:
           for id,a in self.actuatorMap.items():
             # If overload bit is high in actuator status message, then
             # we have to reset motion_enable false before back true
-            if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and a.overflg == 0:
-              motion_enable = bin(int(1))[2:].zfill(1)[::-1]
+            if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and \
+              a.overflg == 0:
+                motion_enable = bin(int(1))[2:].zfill(1)[::-1]
             else:
-              motion_enable = bin(int(0))[2:].zfill(1)[::-1]
+                motion_enable = bin(int(0))[2:].zfill(1)[::-1]
 
             bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
 
@@ -343,9 +350,10 @@ class Actuator:
   def __init__(self, nodeID):
     # TODO grab actuator position at startup
     self.nodeID = nodeID
-    self.pos_cmd = STROKE_RESET
-    self._pos_mm = 0
+    self._pos_cmd = None #target position to drive actuator to
+    self._pos_mm = 0 # actual position reported in can msg
     self._overflg = 0
+    self._lst_update = None
 
   def extend(self, delta):
     """
@@ -360,7 +368,7 @@ class Actuator:
     return self.change(-delta)
 
   def change(self, delta):
-    p = self.pos_cmd + delta
+    p = self._pos_cmd + delta
     p = self._constrain(p)
     return self.set_actuator(p)
 
@@ -368,15 +376,15 @@ class Actuator:
     """
     Sets actuator position to a specific value.
     """
-    self.pos_cmd = self._constrain(p)
-    return self.pos_cmd
+    self._pos_cmd = self._constrain(p)
+    return self._pos_cmd
 
   def reset(self, p):
     """
     Reset actuator to predefined value
     """
-    self.pos_cmd = self.constrain(p)
-    return self.pos_cmd
+    self._pos_cmd = self.constrain(p)
+    return self._pos_cmd
 
   # Limit the position command to between our minimum and maximum.
   def _constrain(self, p):
@@ -385,6 +393,14 @@ class Actuator:
     if p > self.MAX:
       return self.MAX
     return p
+
+  @property
+  def pos_cmd(self):
+    return self._pos_cmd
+
+  @pos_cmd.setter
+  def pos_cmd(self, value):
+    self._pos_cmd = value
 
   @property
   def pos_mm(self):
@@ -402,6 +418,14 @@ class Actuator:
   def overflg(self, value):
     self._overflg = value
 
+  @property
+  def lst_update(self):
+    return self._lst_update
+
+  @lst_update.setter
+  def lst_update(self, value):
+    self._lst_update = value
+
 
 class Rudder:
   RUD_MIN = RUD_MIN
@@ -409,24 +433,31 @@ class Rudder:
   TOE_IN = TOE_IN
 
   def __init__(self, a1, a2):
-    self.pos_deg = 0
     self.a1 = a1 # port actuator
     self.a2 = a2 # starboard actuator
+    self.pos_deg = self.get_rudder(a1, a2)
+    print('initialized rudder at {}'.format(self.pos_deg))
 
   def change(self, delta):
     p = self.pos_deg + delta
     p = self._constrain(p)
     return self.set_rudder(p)
 
+  def get_rudder(self, a1, a2):
+    self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
+    self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
+    self.pos_deg = (self.pos1_deg + self.pos2_deg) / 2
+    return self.pos_deg
+
   def set_rudder(self, p):
     """
-    Set the rudder angle to a specific value.
+    Set the rudder angle to specified valued after constraining it
+    Return constrained value
     """
     self.pos_deg = self._constrain(p)
     pos1_mm, pos2_mm = self._calc_actuator_pos()
     self.a1.set_actuator(pos1_mm)
     self.a2.set_actuator(pos2_mm)
-    print("{} and {}".format(pos1_mm, pos2_mm))
     return self.pos_deg
 
   def _constrain(self, p):
@@ -437,11 +468,10 @@ class Rudder:
     return p
 
   def _calc_actuator_pos(self):
-    #TODO actual mapping between rudder angle and actuator position is defined by kinematics, which is likely nonlinear
-    pos1_mm = (self.a1.MAX - self.a1.MIN) / (self.RUD_MAX - self.RUD_MIN) * self._constrain(self.pos_deg - self.TOE_IN) + self.a1.MIN
-    pos2_mm = (self.a2.MAX - self.a2.MIN) / (self.RUD_MAX - self.RUD_MIN) * self._constrain(self.pos_deg + self.TOE_IN) + self.a2.MIN
+    #TODO actual mapping between rudder angle and actuator position is defined by kinematics, which is likely trigonometric
+    pos1_mm = (self.a1.MAX - self.a1.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self.pos_deg - self.TOE_IN) - self.RUD_MIN) + self.a1.MIN
+    pos2_mm = (self.a2.MAX - self.a2.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self.pos_deg + self.TOE_IN) - self.RUD_MIN) + self.a2.MIN
     return pos1_mm, pos2_mm
-
 
 def process_encoder_events():
   while True:
@@ -462,7 +492,7 @@ def process_encoder_events():
 
 # def on_press(value):
 #   a.center()
-#   print("Reset actuator to: {}".format(a.pos_cmd))
+#   print("Reset actuator to: {}".format(a._pos_cmd))
 #   EVENT.set()
 
 # This callback runs in the background thread. All it does is put turn
@@ -511,6 +541,10 @@ if __name__ == "__main__":
 
   # if gpioButton != None:
   #   debug("Reading actuator reset position command from pin {}".format(gpioButton))
+
+  # Actuator will respond within 0.1s, which will allow us to initialize the rudder
+  # at the startup position
+  time.sleep(0.5)
 
   r = Rudder(a1,a2)
 
