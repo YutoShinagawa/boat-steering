@@ -54,7 +54,7 @@ STROKE_RESET = 75 #mm
 
 # Controller will command the servo to move if the feedback position deviates from the
 # command reference by more than the threshold below
-MOTION_THRESH = 1 #mm
+MOTION_THRESH = 2 #mm
 
 # Send SAEJ1939 actuator control messages (ACM) at fixed rate even if the
 # actuator isn't being actively moved so that we continue to get periodic
@@ -248,6 +248,10 @@ class CAN:
       print('starting can_rx_loop thread')
       while True:
         for msg in self.bus:
+          source_id = msg.arbitration_id & 0XFF
+          if source_id not in self.actuatorMap:
+            continue
+          
           timestamp = datetime.datetime.now()
           frame = ''
           for data in msg.data:
@@ -267,17 +271,14 @@ class CAN:
           curr_amps = int(bin_curr[::-1], 2)*AMP_BIT
           speed_perc = int(bin_speed[::-1], 2)*PERC_BIT
 
-          source_id = msg.arbitration_id & 0XFF
-
-          # TODO: handle case where source_id is not in dictionary
           #return actuator object corresponding to the sender's id
           a = self.actuatorMap[source_id]
           a.pos_mm = pos_mm
           a.overflg = int(bin_overflg)
-          a.lst_update = timestamp
-          if a.pos_cmd is None:
-            a.pos_cmd = pos_mm
 
+          if a.lst_update is None:
+            a.pos_cmd = pos_mm
+          a.lst_update = timestamp
           timestr = timestamp.strftime("%H:%M:%S.%f")[:-4]
           print("{}, id={}, cmd={:.1f}mm, pos={:.1f}mm, curr={:.1f}A, duty={}%, " \
                 "voltage err={}, temp error={}, " \
@@ -289,7 +290,7 @@ class CAN:
 
         time.sleep(1)
     except Exception as e:
-      print(f"Exception in can_rx_loop: {e}")
+      print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
 
   def can_tx_loop(self):
     try:
@@ -334,7 +335,7 @@ class CAN:
 
           time_after_loop = time.time()
     except Exception as e:
-      print(f"Exception in can_tx_loop: {e}")
+      print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
 
 class ActuatorError(Exception):
   pass
@@ -346,11 +347,12 @@ class Actuator:
   """
   MIN = STROKE_MIN
   MAX = STROKE_MAX
+  RESET = STROKE_RESET
 
   def __init__(self, nodeID):
     # TODO grab actuator position at startup
     self.nodeID = nodeID
-    self._pos_cmd = None #target position to drive actuator to
+    self._pos_cmd = self.RESET #target position to drive actuator to
     self._pos_mm = 0 # actual position reported in can msg
     self._overflg = 0
     self._lst_update = None
