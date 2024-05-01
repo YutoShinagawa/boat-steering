@@ -293,13 +293,13 @@ class CAN:
       print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
 
   def can_tx_loop(self):
-    try:
-      print('starting can_tx_loop thread')
-      bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
-      bin_speed = bin(int(SPEED_PERC/PERC_BIT))[2:].zfill(5)[::-1]
+    print('starting can_tx_loop thread')
+    bin_current = bin(int(CURRENT_AMPS/AMP_BIT))[2:].zfill(9)[::-1]
+    bin_speed = bin(int(SPEED_PERC/PERC_BIT))[2:].zfill(5)[::-1]
 
-      time_after_loop = time.time() # initialization
-      while True:
+    time_after_loop = time.time() # initialization
+    while True:
+      try:
         time_before_loop = time.time()
         #TODO: consider creating separate tx threads for each actuator
         if time_before_loop - time_after_loop >= (1./CAN_SEND_HZ):
@@ -334,8 +334,11 @@ class CAN:
             self.bus.send(message, timeout=0.2)
 
           time_after_loop = time.time()
-    except Exception as e:
-      print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
+      except can.CanError as e:
+        print(f"CAN Error: {e}, retrying...")
+        time.sleep(1)  # Wait a bit before retrying
+      except Exception as e:
+        print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
 
 class ActuatorError(Exception):
   pass
