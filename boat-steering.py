@@ -22,6 +22,9 @@ import threading
 import time
 import can
 import datetime
+import board
+from adafruit_ht16k33.bargraph import Bicolor24
+import copy
 
 from RPi import GPIO
 from queue import Queue
@@ -440,30 +443,31 @@ class Rudder:
   def __init__(self, a1, a2):
     self.a1 = a1 # port actuator
     self.a2 = a2 # starboard actuator
-    self.pos_deg = self.get_rudder(a1, a2)
+    self._pos_deg = self.get_rudder(a1, a2)
+    self._pos_cmd = self._pos_deg
     print('initialized rudder at {}'.format(self.pos_deg))
 
   def change(self, delta):
-    p = self.pos_deg + delta
+    p = self._pos_cmd + delta
     p = self._constrain(p)
     return self.set_rudder(p)
 
   def get_rudder(self, a1, a2):
     self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
     self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
-    self.pos_deg = (self.pos1_deg + self.pos2_deg) / 2
-    return self.pos_deg
+    self._pos_deg = (self.pos1_deg + self.pos2_deg) / 2
+    return self._pos_deg
 
   def set_rudder(self, p):
     """
     Set the rudder angle to specified valued after constraining it
     Return constrained value
     """
-    self.pos_deg = self._constrain(p)
+    self._pos_cmd = self._constrain(p)
     pos1_mm, pos2_mm = self._calc_actuator_pos()
     self.a1.set_actuator(pos1_mm)
     self.a2.set_actuator(pos2_mm)
-    return self.pos_deg
+    return self._pos_cmd
 
   def _constrain(self, p):
     if p < self.RUD_MIN:
@@ -474,9 +478,58 @@ class Rudder:
 
   def _calc_actuator_pos(self):
     #TODO actual mapping between rudder angle and actuator position is defined by kinematics, which is likely trigonometric
-    pos1_mm = (self.a1.MAX - self.a1.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self.pos_deg - self.TOE_IN) - self.RUD_MIN) + self.a1.MIN
-    pos2_mm = (self.a2.MAX - self.a2.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self.pos_deg + self.TOE_IN) - self.RUD_MIN) + self.a2.MIN
+    pos1_mm = (self.a1.MAX - self.a1.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self._pos_cmd - self.TOE_IN) - self.RUD_MIN) + self.a1.MIN
+    pos2_mm = (self.a2.MAX - self.a2.MIN) / (self.RUD_MAX - self.RUD_MIN) * (self._constrain(self._pos_cmd + self.TOE_IN) - self.RUD_MIN) + self.a2.MIN
     return pos1_mm, pos2_mm
+
+  @property
+  def pos_deg(self):
+    return self.get_rudder(self.a1, self.a2)
+
+
+class LEDBarGraph:
+  NUMBARS = 24
+
+  def __init__(self, r, actuatorMap):
+    # start 2 Hz thread
+    i2c = board.I2C()
+    self.bc24 = Bicolor24(i2c, address=0x70)
+    self.bc24.brightness = 1
+    self.bc24.blink_rate = 0
+    self.r = r
+    self.actuatorMap = actuatorMap
+    self.interval = (r.RUD_MAX - r.RUD_MIN) / self.NUMBARS
+    self.bagraph_thread = threading.Thread(target=self._update_bargraph)
+    self.bagraph_thread.start()
+
+  def _update_bargraph(self):
+    carray = [self.bc24.LED_OFF] * 24
+    curr_pos = r.pos_deg
+    while True:
+      old_carray = carray
+      prev_pos = curr_pos
+      curr_pos = copy.copy(r.pos_deg)
+      i_pos = int((curr_pos - r.RUD_MIN) // self.interval)
+      i_pos = self.NUMBARS - 1 if i_pos >= self.NUMBARS else i_pos
+      carray = [self.bc24.LED_OFF] * 24
+      if i_pos <=11:
+        i_cen = 12
+        carray[i_pos+1:i_cen] = [self.bc24.LED_GREEN] * (i_cen-i_pos-1)
+      else:
+        i_cen = 11
+        carray[i_cen+1:i_pos] = [self.bc24.LED_GREEN] * (i_pos - i_cen -1)
+      carray[i_pos] = self.bc24.LED_RED
+      carray[i_cen] = self.bc24.LED_YELLOW
+      if curr_pos > prev_pos:
+        updateseq = range(len(carray))
+      else:
+        updateseq = reversed(range(len(carray)))
+      for i in updateseq:
+        if carray[i] != old_carray[i]:
+          self.bc24[i] = carray[i]
+      time.sleep(0.25)
+  def cleanup(self):
+    self.bc24.fill(self.bc24.LED_OFF)
 
 def process_encoder_events():
   while True:
@@ -525,6 +578,7 @@ def on_exit(a, b):
   print("Exiting...")
   tcs.destroy()
   GPIO.cleanup()
+  led.cleanup()
   sys.exit(0)
 
 
@@ -557,3 +611,5 @@ if __name__ == "__main__":
   encoder_thread.start()
 
   tcs = TakeControlSwitch(callback=on_turn)
+
+  led = LEDBarGraph(r,actuatorMap)
