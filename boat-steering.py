@@ -309,11 +309,11 @@ class CAN:
           for id,a in self.actuatorMap.items():
             # If overload bit is high in actuator status message, then
             # we have to reset motion_enable false before back true
-            if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and \
-              a.overflg == 0:
-                motion_enable = bin(int(1))[2:].zfill(1)[::-1]
-            else:
-                motion_enable = bin(int(0))[2:].zfill(1)[::-1]
+            motion_enable = bin(int(0))[2:].zfill(1)[::-1]
+            if a.pos_mm is not None:
+              if abs(a.pos_cmd - a.pos_mm) > MOTION_THRESH and \
+                a.overflg == 0:
+                  motion_enable = bin(int(1))[2:].zfill(1)[::-1]
 
             bin_pos = bin(int(a.pos_cmd/MM_BIT))[2:].zfill(14)[::-1]
 
@@ -359,7 +359,7 @@ class Actuator:
     # TODO grab actuator position at startup
     self.nodeID = nodeID
     self._pos_cmd = self.RESET #target position to drive actuator to
-    self._pos_mm = 0 # actual position reported in can msg
+    self._pos_mm = None # actual position reported in can msg
     self._overflg = 0
     self._lst_update = None
 
@@ -445,17 +445,25 @@ class Rudder:
     self.a2 = a2 # starboard actuator
     self._pos_deg = self.get_rudder(a1, a2)
     self._pos_cmd = self._pos_deg
-    print('initialized rudder at {}'.format(self.pos_deg))
+    print('Based on current actuator position, initialized ' 
+          'rudder command at: {}'.format(self.pos_deg))
 
   def change(self, delta):
-    p = self._pos_cmd + delta
-    p = self._constrain(p)
-    return self.set_rudder(p)
+    pos_cmd = copy.copy(self._pos_cmd)
+    if pos_cmd is not None:
+      p = self._pos_cmd + delta
+      p = self._constrain(p)
+      self.set_rudder(p)
 
   def get_rudder(self, a1, a2):
-    self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
-    self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
-    self._pos_deg = (self.pos1_deg + self.pos2_deg) / 2
+    pos1_mm = copy.copy(self.a1.pos_mm)
+    pos2_mm = copy.copy(self.a2.pos_mm)
+    if pos1_mm is not None and pos2_mm is not None:
+      self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
+      self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
+      self._pos_deg = (self.pos1_deg + self.pos2_deg) / 2
+    else:
+        self._pos_deg = None
     return self._pos_deg
 
   def set_rudder(self, p):
@@ -488,7 +496,7 @@ class Rudder:
 
 
 class LEDBarGraph:
-  NUMBARS = 24
+  NUMBARS = 24 #even #s only
 
   def __init__(self, r, actuatorMap):
     # start 2 Hz thread
@@ -504,19 +512,26 @@ class LEDBarGraph:
 
   def _update_bargraph(self):
     carray = [self.bc24.LED_OFF] * 24
-    curr_pos = r.pos_deg
+    curr_pos = None
     while True:
       old_carray = carray
       prev_pos = curr_pos
       curr_pos = copy.copy(r.pos_deg)
+      time.sleep(0.25)
+      #r.pos_deg will be None if we haven't received feedback msgs from both actuators
+      if curr_pos is None:
+        self.bc24.fill(self.bc24.LED_RED)
+        continue
+
       i_pos = int((curr_pos - r.RUD_MIN) // self.interval)
       i_pos = self.NUMBARS - 1 if i_pos >= self.NUMBARS else i_pos
-      carray = [self.bc24.LED_OFF] * 24
-      if i_pos <=11:
-        i_cen = 12
+      carray = [self.bc24.LED_OFF] * self.NUMBARS
+      #TODO handle odd # of BARS
+      if i_pos <= (self.NUMBARS // 2 - 1):
+        i_cen = self.NUMBARS // 2
         carray[i_pos+1:i_cen] = [self.bc24.LED_GREEN] * (i_cen-i_pos-1)
       else:
-        i_cen = 11
+        i_cen = self.NUMBARS // 2 - 1
         carray[i_cen+1:i_pos] = [self.bc24.LED_GREEN] * (i_pos - i_cen -1)
       carray[i_pos] = self.bc24.LED_RED
       carray[i_cen] = self.bc24.LED_YELLOW
@@ -527,7 +542,7 @@ class LEDBarGraph:
       for i in updateseq:
         if carray[i] != old_carray[i]:
           self.bc24[i] = carray[i]
-      time.sleep(0.25)
+
   def cleanup(self):
     self.bc24.fill(self.bc24.LED_OFF)
 
@@ -569,10 +584,10 @@ def consume_queue():
 def handle_delta(delta):
   if delta == 1:
     # positive increment is starboard
-    pos_deg = r.change(RUD_INCR)
+    r.change(RUD_INCR)
   else:
     # negative increment is port
-    pos_deg = r.change(-RUD_INCR)
+    r.change(-RUD_INCR)
 
 def on_exit(a, b):
   print("Exiting...")
