@@ -5,8 +5,10 @@ Requires=can-setup.service
 
 [Service]
 Type=simple
-ExecStart=/home/yuto/boat-steering/boat-steering.py
-WorkingDirectory=/home/yuto/boat-steering
+User=yuto
+WorkingDirectory=/home/yuto/boat-steering/boat-steering
+ExecStart=/home/yuto/.local/bin/poetry run python boat-steering.py
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
