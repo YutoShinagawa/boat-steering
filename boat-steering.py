@@ -341,7 +341,7 @@ class CAN:
         print(f"CAN Error: {e}, retrying...")
         time.sleep(1)  # Wait a bit before retrying
       except Exception as e:
-        print(f"Exception in can_rx_loop: {type(e).__name__}, {e}")
+        print(f"Exception in can_tx_loop: {type(e).__name__}, {e}")
 
 class ActuatorError(Exception):
   pass
