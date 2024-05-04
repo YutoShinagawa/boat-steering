@@ -512,15 +512,16 @@ class LEDBarGraph:
 
   def _update_bargraph(self):
     carray = [self.bc24.LED_OFF] * 24
-    curr_pos = None
+    curr_pos = copy.copy(r.pos_deg)
     while True:
       old_carray = carray
       prev_pos = curr_pos
       curr_pos = copy.copy(r.pos_deg)
       time.sleep(0.25)
       #r.pos_deg will be None if we haven't received feedback msgs from both actuators
-      if curr_pos is None:
+      if curr_pos is None or prev_pos is None:
         self.bc24.fill(self.bc24.LED_RED)
+        carray = [self.bc24.LED_RED] * self.NUMBARS
         continue
 
       i_pos = int((curr_pos - r.RUD_MIN) // self.interval)
