@@ -51,9 +51,9 @@ GPIO_2LED = 27 #station 2 in control LED
 GPIO_BUTTON = None
 
 # The minimum and maximum actuator stroke in mm
-STROKE_MIN = 0 #mm
-STROKE_MAX = 150 #mm
-STROKE_RESET = 75 #mm
+STROKE_MIN = 10 #mm
+STROKE_MAX = 130 #mm
+STROKE_RESET = 70 #mm
 
 # Controller will command the servo to move if the feedback position deviates from the
 # command reference by more than the threshold below
@@ -456,14 +456,23 @@ class Rudder:
       self.set_rudder(p)
 
   def get_rudder(self, a1, a2):
-    pos1_mm = copy.copy(self.a1.pos_mm)
-    pos2_mm = copy.copy(self.a2.pos_mm)
-    if pos1_mm is not None and pos2_mm is not None:
-      self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
-      self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
-      self._pos_deg = (self.pos1_deg + self.pos2_deg) / 2
-    else:
-        self._pos_deg = None
+    self.pos1_deg = None
+    self.pos2_deg = None
+    self._pos_deg = None
+    if a1 is not None:
+      pos1_mm = copy.copy(self.a1.pos_mm)
+      if pos1_mm is not None:
+        self.pos1_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a1.MAX - self.a1.MIN) * (self.a1.pos_mm - self.a1.MIN) + self.RUD_MIN
+        self._pos_deg = self.pos1_deg
+    if a2 is not None:
+      pos2_mm = copy.copy(self.a2.pos_mm)
+      if pos2_mm is not None:
+        self.pos2_deg = (self.RUD_MAX - self.RUD_MIN) / (self.a2.MAX - self.a2.MIN) * (self.a2.pos_mm - self.a2.MIN) + self.RUD_MIN
+        self._pos_deg = self.pos2_deg
+    if a1 is not None and a2 is not None:
+      if self.pos1_deg is not None and self.pos2_deg is not None:
+        self._pos_deg = (self.pos1_deg + self.pos2_deg) / 2
+
     return self._pos_deg
 
   def set_rudder(self, p):
