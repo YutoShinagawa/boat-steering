@@ -251,7 +251,12 @@ class CAN:
       while True:
         for msg in self.bus:
           source_id = msg.arbitration_id & 0XFF
-          if source_id not in self.actuatorMap:
+          msg_type = (msg.arbitration_id >> 16) & 0xFF
+          # toss out any messages not originating from our actuator map
+          # or any messages that aren't the actuator feedback messages, like
+          # the initial address claim messages, which if we parse will result in 
+          # bogus actuator init states
+          if source_id not in self.actuatorMap or msg_type != 0XEF:
             continue
           
           timestamp = datetime.datetime.now()
