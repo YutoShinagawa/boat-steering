@@ -533,7 +533,7 @@ class LEDBarGraph:
         carray = [self.bc24.LED_RED] * self.NUMBARS
         continue
 
-      i_pos = int((curr_pos - r.RUD_MIN) // self.interval)
+      i_pos = int((max(min(r.RUD_MAX, curr_pos),r.RUD_MIN) - r.RUD_MIN) // self.interval)
       i_pos = self.NUMBARS - 1 if i_pos >= self.NUMBARS else i_pos
       carray = [self.bc24.LED_OFF] * self.NUMBARS
       #TODO handle odd # of BARS
