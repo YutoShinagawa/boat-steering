@@ -64,7 +64,7 @@ MOTION_THRESH = 2 #mm
 # actuator feedback messages (AFM).
 # Set the motion bit within the ACM to 1 only when the actuator needs to be
 # moved to a different position; keep 0 all other times
-CAN1_ID = 0x13
+CAN1_ID = 0x13 # ended up installing this on starboard side rudder
 CAN2_ID = 0x14
 CAN_SEND_HZ = 10
 
@@ -620,8 +620,8 @@ if __name__ == "__main__":
   
   signal.signal(signal.SIGINT, on_exit)
 
-  a1 = Actuator(CAN1_ID) # Port actuator
-  a2 = Actuator(CAN2_ID) # Starboard actuator
+  a1 = Actuator(CAN1_ID)
+  a2 = Actuator(CAN2_ID)
   
   actuatorMap = {
     CAN1_ID: a1,
