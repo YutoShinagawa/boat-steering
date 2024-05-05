@@ -100,7 +100,6 @@ QUEUE = Queue()
 # queue completely each time through the loop, so it's guaranteed to catch up.
 EVENT = threading.Event()
 
-GPIO.setmode(GPIO.BCM)
 
 def debug(str):
   if not DEBUG:
@@ -635,6 +634,17 @@ if __name__ == "__main__":
   encoder_thread = threading.Thread(target=process_encoder_events)
   encoder_thread.start()
 
-  tcs = TakeControlSwitch(callback=on_turn)
+# Once every 20 or so startups, the add_event_detect within the TakeControlSwitch or
+# Rotary encoder init fails with a "Failed to add edge detection"  If this happens,
+# keep trying until it succeeds.
+while True:
+  GPIO.setmode(GPIO.BCM)
+  try:
+    tcs = TakeControlSwitch(callback=on_turn)
+    break
+  except Exception as e:
+    print(f"Exception in take control switch, trying again: {type(e).__name__}, {e}")
+    GPIO.cleanup()
+    time.sleep(0.1)
 
-  led = LEDBarGraph(r,actuatorMap)
+led = LEDBarGraph(r,actuatorMap)
