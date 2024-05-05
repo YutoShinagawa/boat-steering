@@ -407,7 +407,7 @@ class Actuator:
 
   @pos_cmd.setter
   def pos_cmd(self, value):
-    self._pos_cmd = value
+    self._pos_cmd = self._constrain(value)
 
   @property
   def pos_mm(self):
@@ -449,6 +449,11 @@ class Rudder:
 
   def change(self, delta):
     pos_cmd = copy.copy(self._pos_cmd)
+    # if actuators weren't on at startup, then we missed our chance to initialize pos_cmd;
+    # take the opportunity to do it now if necessary
+    if pos_cmd is None:
+      pos_cmd = self.get_rudder(self.a1, self.a2)
+      self._pos_cmd = pos_cmd
     if pos_cmd is not None:
       p = self._pos_cmd + delta
       p = self._constrain(p)
