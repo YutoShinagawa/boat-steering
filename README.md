@@ -23,6 +23,11 @@ The application code can trace its origins to prior work by two really talented 
 5. The application then instantiates a "take control switch" object, which is just a wrapper around the encoder object. Each time the wrapper detects a button press to transfer control from one station to another, it destroys the old encoder object and creates a new one.  I decided to do it this way because I didn't want the RPi to be listening for events on 4 GPIO pins (a pair for each encoder) simultaneously as I thought it would degrade performance.  Creating an encoder object ad hoc with the 2 GPIO pins specific to that encoder effectively reduces the number of event detection threads to 2.
 6. Lastly, the application creates an LED bar graph object, which starts a thread to continuously get rudder position to paint a 24-segment LED display.
 
+## LED Schema
+The application paints the LED bargraph according to the schema below:
+
+![test](https://raw.githubusercontent.com/YutoShinagawa/boat-steering/master/bargraph.png)
+
 We deployed this system last weekend in preparation for an upcoming houseboat trip.  I verified that it handles gracefully all the obvious failure modes including single actuator operation, temporary actuator power loss and communication dropout, and actuators being powered off during application startup.  I've created github issues for all the known issues and vulnerabilities.
 
 Happy boating!
